@@ -49,3 +49,15 @@ for st in sts:
         print(st["name"],"不及格")
         j=j+1
 print("不合格人数是:",j,"人")
+
+def greet(name):
+    return"笨蛋，"+name 
+message=greet("布丁")
+print(message)
+
+def add(a,b):
+    c=a+b
+    return"result is "+str(c)
+message=add(2,5)
+print(message)
+
