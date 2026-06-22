@@ -29,6 +29,10 @@ def add_expense(expenses):
     except ValueError:
         print("⚠️ 金额必须是数字哦，这笔没记上\n")
         return                                       # 输入错就直接退出这个功能
+    # float() 只保证“是个数”，挡不住 0、负数、或 1e62 这种荒谬大数 —— 这里补一道业务校验
+    if amount <= 0 or amount > 1_000_000:
+        print("⚠️ 金额要在 0~100万 之间，这笔没记上\n")
+        return
     category = input("请输入支出类别（如 餐饮/交通）：")
     # 把这一笔做成一个字典，再装进列表
     expenses.append({"金额": amount, "类别": category})
