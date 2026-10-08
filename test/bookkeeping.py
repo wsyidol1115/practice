@@ -1,11 +1,59 @@
 """报销记账小程序：运行 python3 bookkeeping.py。"""
 
 import json
+import os
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 
 DATA_FILE = Path(__file__).with_name("reimbursements.json")
+
+
+def parse_amount(value):
+    """登记和读取数据使用相同的金额规则，避免浮点数精度误差。"""
+    if not isinstance(value, str):
+        raise ValueError("金额必须是十进制字符串")
+    try:
+        amount = Decimal(value.strip())
+        if (
+            not amount.is_finite()
+            or amount <= 0
+            or amount > Decimal("1000000000")
+            or amount != amount.quantize(Decimal("0.01"))
+        ):
+            raise ValueError("金额必须大于 0、不超过 10 亿元且最多两位小数")
+    except InvalidOperation as error:
+        raise ValueError("金额格式不正确") from error
+    return amount
+
+
+@contextmanager
+def exclusive_session():
+    """在读取前加锁并持有到退出，由操作系统在进程结束时释放。"""
+    with DATA_FILE.with_suffix(".json.lock").open("a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+
+            lock.seek(0, os.SEEK_END)
+            if lock.tell() == 0:
+                lock.write(b"\0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    # 不删除锁文件：删除可能让不同进程锁住不同文件，失去互斥。
 
 
 def load_records():
@@ -15,15 +63,20 @@ def load_records():
         records = json.load(file)
     if not isinstance(records, list):
         raise ValueError("数据格式不正确")
+    seen_ids = set()
     for record in records:
         if (
             not isinstance(record, dict)
-            or not isinstance(record.get("id"), int)
+            or type(record.get("id")) is not int
+            or record["id"] <= 0
+            or record["id"] in seen_ids
             or not isinstance(record.get("project"), str)
+            or not record["project"].strip()
             or record.get("status") not in ("待报销", "已报销")
-            or not Decimal(record["amount"]).is_finite()
         ):
             raise ValueError("记录格式不正确")
+        parse_amount(record.get("amount"))
+        seen_ids.add(record["id"])
     return records
 
 
@@ -42,15 +95,8 @@ def register(records):
         print("项目不能为空，未登记。")
         return
     try:
-        amount = Decimal(input("请输入金额（元，最多两位小数）：").strip())
-        if (
-            not amount.is_finite()
-            or amount <= 0
-            or amount > Decimal("1000000000")
-            or amount != amount.quantize(Decimal("0.01"))
-        ):
-            raise ValueError
-    except (InvalidOperation, ValueError):
+        amount = parse_amount(input("请输入金额（元，最多两位小数）："))
+    except ValueError:
         print("金额须大于 0、不超过 10 亿元，且最多两位小数，未登记。")
         return
     record = {
@@ -111,7 +157,7 @@ def query(records):
             print("请输入 1、2 或 3。")
 
 
-def main():
+def run_program():
     try:
         records = load_records()
     except (OSError, ValueError, KeyError, TypeError, InvalidOperation) as error:
@@ -136,6 +182,18 @@ def main():
     except (EOFError, KeyboardInterrupt):
         print("\n已退出，已保存的记录会保留。")
         return 0
+
+
+def main():
+    try:
+        with exclusive_session():
+            return run_program()
+    except BlockingIOError:
+        print("另一个记账程序正在使用此账目，请先退出它，再重新打开。")
+        return 1
+    except OSError as error:
+        print(f"无法锁定账目文件：{error}。为保护数据，程序已退出。")
+        return 1
 
 
 if __name__ == "__main__":
